@@ -64,11 +64,11 @@ int main(int argc, char **argv) {
     struct sockaddr csaddr = {0};
     int csaddrlen = sizeof(csaddr);
 
-    char buf[4096];
+    //char buf[4096];
 
     printf("Accepting connections on port 666\n");
     while (1) {
-        int cfd = accept(sfd, &csaddr, &csaddrlen); 
+        int cfd = accept(sfd, &csaddr, (unsigned int *)&csaddrlen); 
         if (cfd < 0) {
             perror("accept");
             return -1;
