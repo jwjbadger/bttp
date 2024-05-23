@@ -9,12 +9,19 @@
 #include <string.h>
 #include <stdlib.h>
 
-struct http_req {
+typedef struct http_header {
+    char *key;
+    char *value;
+    struct http_header *next; // Should there be a back pointer too?
+} http_header;
+
+typedef struct http_req {
     char *method;
     char *path;
     char *version;
-    // Headers are just a joke right?
-};
+    http_header *headers;
+    char *body; // Not even gonna try to parse this...
+} http_req;
 
 int opensocket(int socktype, const char * service) {
     struct addrinfo hints = {0};
@@ -61,7 +68,7 @@ int opensocket(int socktype, const char * service) {
     return sfd;
 }
 
-int parse_req(const char *req, struct http_req *freq) {
+int parse_req(const char *req, http_req *freq) {
     char *method = strchr(req, ' ');
     if (method == NULL) {
         fprintf(stderr, "Error parsing HTTP method\n");
@@ -93,15 +100,65 @@ int parse_req(const char *req, struct http_req *freq) {
 
     freq->version = malloc(1 + version - path - 5); // 5 represents the length of "HTTP/"
     strncpy(freq->version, path + 5, version - path - 5);
-    freq->version[version - path - 5] = 0; 
-    
+    freq->version[version - path - 5] = 0;
+
+    freq->headers = malloc(sizeof(http_header));
+    char *index = strchr(version, '\n');
+    http_header *head = freq->headers;
+
+    while (1) {
+        char *end = strchr(++index, ':');
+        if (end == NULL) {
+            fprintf(stderr, "Error parsing key for msg:\n%s", index);
+            return -1;
+        }
+
+        head->key = malloc(1 + end - index);
+        strncpy(head->key, index, end - index);
+        head->key[end - index] = 0;
+
+        index = end + 2;
+        end = strchr(index, '\r');
+        if (end == NULL && (end = strchr(index, '\n')) == NULL) {
+            fprintf(stderr, "Error parsing value for key: %s\n", head->key);
+            return -1;
+        }
+
+        head->value = malloc(1 + end - index);
+        strncpy(head->value, index, end - index);
+        head->value[end - index] = 0;
+
+        index = strchr(index, '\n');
+
+        if (index == NULL || index[1] == '\r' || index[1] == '\n') {
+            head->next = NULL;
+            break;
+        }
+
+        head->next = malloc(sizeof(http_header));
+        head = head->next;
+    }
+
+    if (index == NULL) {
+        return 0;
+    }
+
+    freq->body = "What's the point?"; // PARSE BODY
     return 0; 
 }
 
-void freereq(struct http_req *req) {
+void freereq(http_req *req) {
     free(req->method);
     free(req->path);
     free(req->version);
+
+    for (http_header *head = req->headers->next, *prev = req->headers; head != NULL; head = head->next) {
+        free(head->key);
+        free(head->value);
+
+        free(prev);
+        prev = head;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -144,7 +201,7 @@ int main(int argc, char **argv) {
         buf[rlen] = 0;
         printf(buf);
         
-        struct http_req req = {0}; 
+        http_req req = {0}; 
         if (parse_req(buf, &req) < 0) {
             fprintf(stderr, "Failed to parse request\n");
 
@@ -155,6 +212,14 @@ int main(int argc, char **argv) {
             continue;
         }
         printf("Parsed req method [%s] at path ['%s'] using HTTP version [%s]\n\n", req.method, req.path, req.version);
+
+        if (strcmp(req.method, "GET") != 0) {
+            char *msg = "HTTP/1.0 501 Not Implemented\r\nContent-Type: text/html\r\n\r\n<html><body><h1>501 Not Implemented</h1></body></html>";
+            send(cfd, msg, strlen(msg), 0);
+            close(cfd);
+            
+            continue;
+        }
 
         char *msg = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>CONGRATS, YOU SUCCESSFULLY GOT '%s'</h1></body></html>";
         char *fmsg = malloc(1 + strlen(msg) + strlen(req.path));
