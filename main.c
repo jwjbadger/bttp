@@ -291,34 +291,54 @@ int main(int argc, char **argv) {
         buf[rlen] = 0;
         printf("%s", buf);
         
-        http_req req = {0}; 
-        if (parse_req(buf, &req) < 0) { // Rework this to use fancy stuff
-            fprintf(stderr, "Failed to parse request\n");
-
-            char *msg = "HTTP/1.1 400 Bad Request";
-            send(cfd, msg, strlen(msg), 0); // If we can't send this we're probably ok? should we even error?
-            close(cfd);
-
-            continue;
-        }
-        printf("Parsed req method [%s] at path ['%s'] using HTTP version [%s]\n\n", req.method, req.path, req.version);
+        http_req req = {0};
 
         char *status = "200 OK";
+        char *path;
+
         http_header head = {"Content-Type", "text/plain"};
         http_res res = {"1.1", status, &head, NULL};
 
-        if (strstr(req.path, "html") != NULL || strcmp(req.path, "/") == 0) {
-            head.key = "text/html";
-        } else if (strstr(req.path, "css") != NULL) {
-            head.key = "text/css";
-        } else if (strstr(req.path, "js") != NULL) {
-            head.key = "text/javascript";
-        }
+        if (parse_req(buf, &req) < 0) {
+            fprintf(stderr, "Failed to parse request\n");
 
-        char *path;
+            // Even though we know these at compile time we malloc them so they can be freed at the end without error
+            // I'm honestly not sure what the best way to handle this would be
+            // Should we just send everything here and `continue`?
+            req.method = malloc(4);
+            req.headers = NULL;
+            req.path = malloc(10);
+            req.version = malloc(4);
+
+            strcpy(req.method, "GET");
+            strcpy(req.path, "/404.html");
+            strcpy(req.version, "1.0");
+
+            req.method[3] = 0;
+            req.path[9] = 0;
+            req.version[3] = 0;
+
+            status = "400 Bad Request";
+
+            path = malloc(strlen(SERVER_DIR) + 10);
+            strcpy(path, SERVER_DIR);
+            strcpy(path + strlen(SERVER_DIR), "/400.html");
+            path[strlen(SERVER_DIR) + 9] = 0;
+        }
+        printf("Parsed req method [%s] at path ['%s'] using HTTP version [%s]\n\n", req.method, req.path, req.version);
+
+        if (strstr(req.path, "html") != NULL || strcmp(req.path, "/") == 0) {
+            head.value = "text/html";
+        } else if (strstr(req.path, "css") != NULL) {
+            head.value = "text/css";
+        } else if (strstr(req.path, "js") != NULL) {
+            head.value = "text/javascript";
+        }
 
         if (strcmp(req.method, "GET") != 0) {
             status = "501 Not Implemented";
+
+            head.value = "text/html";
 
             path = malloc(strlen(SERVER_DIR) + 10);
 
@@ -347,6 +367,8 @@ int main(int argc, char **argv) {
         if ((ret = sendfile(cfd, &res, path)) < 0) {
             if (ret == -2) {
                 free(path);
+
+                head.value = "text/html";
 
                 path = malloc(strlen(SERVER_DIR) + 10);
 
