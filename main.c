@@ -9,6 +9,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+const char* SERVER_DIR = "./serve";
+
 typedef struct http_header {
     char *key;
     char *value;
@@ -22,6 +24,14 @@ typedef struct http_req {
     http_header *headers;
     char *body; // Not even gonna try to parse this...
 } http_req;
+
+typedef struct http_res {
+    char *version;
+    char *status;
+    http_header *headers;
+    char *body;
+} http_res;
+
 
 int opensocket(int socktype, const char * service) {
     struct addrinfo hints = {0};
@@ -41,7 +51,7 @@ int opensocket(int socktype, const char * service) {
         if ((sfd = socket(n->ai_family, n->ai_socktype, n->ai_protocol)) < 0) {
             perror("socket");
             continue;
-        }
+        } // do you have to put the OK after 200 http
 
         if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) {
             perror("setsockopt");
@@ -147,18 +157,87 @@ int parse_req(const char *req, http_req *freq) {
     return 0; 
 }
 
+void freeheaders(http_header *headers) {
+    for (http_header *head = headers, *prev; head != NULL; head = head->next, free(prev)) {
+        free(head->key);
+        free(head->value);
+
+        prev = head;
+    }
+}
+
 void freereq(http_req *req) {
     free(req->method);
     free(req->path);
     free(req->version);
+    freeheaders(req->headers);
+}
 
-    for (http_header *head = req->headers->next, *prev = req->headers; head != NULL; head = head->next) {
-        free(head->key);
-        free(head->value);
+void freeres(http_res *res) {
+    free(res->body);
+    // freeheaders(res->headers);
+}
 
-        free(prev);
-        prev = head;
+char *serialize_res(http_res *res) {
+    ssize_t headerlen = 0;
+    for (http_header *head = res->headers; head != NULL; head = head->next) {
+        headerlen += 4 + strlen(head->key) + strlen(head->value);
     }
+
+    char* headers = malloc(headerlen + 1);
+    ssize_t index = 0;
+
+    for (http_header *head = res->headers; head != NULL; head = head->next) {
+        index += snprintf(headers + index, 1 + headerlen - index, "%s: %s\r\n", head->key, head->value); // if this actually works it's awful; side-note snprintf DOES null-terminate
+    }
+
+    ssize_t msglen = 10 + strlen(res->version) + strlen(res->status) + headerlen + strlen(res->body);
+    char *msg = malloc(msglen + 1);
+
+    snprintf(msg, msglen + 1, "HTTP/%s %s\r\n%s\r\n%s", res->version, res->status, headers, res->body);
+
+    free(headers);
+    return msg;
+}
+
+// Everything on res should be filled out except body
+int sendfile(int cfd, http_res *res, char *path) {
+    FILE *resf = fopen(path, "r");
+
+    if (resf == NULL) {
+        return -2;
+    }
+
+    fseek(resf, 0, SEEK_END);
+    long fsize = ftell(resf);
+    fseek(resf, 0, SEEK_SET);
+
+    char *contents = malloc(fsize + 1);
+    fread(contents, fsize, 1, resf);
+    contents[fsize] = 0;
+    
+    fclose(resf);
+
+    res->body = contents; 
+
+    char *msg = serialize_res(res);
+
+    ssize_t sent = send(cfd, msg, strlen(msg), 0);
+    freeres(res);
+
+    if (sent < 0) {
+        free(msg);
+        perror("send");
+        return -1;
+    } else if (sent != strlen(msg)) {
+        free(msg);
+        fprintf(stderr, "Wasn't able to send entire message\n");
+        return -1;
+    }
+
+    free(msg);
+
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -199,13 +278,13 @@ int main(int argc, char **argv) {
             return -1;
         }
         buf[rlen] = 0;
-        printf(buf);
+        printf("%s", buf);
         
         http_req req = {0}; 
-        if (parse_req(buf, &req) < 0) {
+        if (parse_req(buf, &req) < 0) { // Rework this to use fancy stuff
             fprintf(stderr, "Failed to parse request\n");
 
-            char *msg = "HTTP/1.0 400 Bad Request";
+            char *msg = "HTTP/1.1 400 Bad Request";
             send(cfd, msg, strlen(msg), 0); // If we can't send this we're probably ok? should we even error?
             close(cfd);
 
@@ -213,29 +292,65 @@ int main(int argc, char **argv) {
         }
         printf("Parsed req method [%s] at path ['%s'] using HTTP version [%s]\n\n", req.method, req.path, req.version);
 
+        char *status = "200 OK";
+        http_header head = {"Content-Type", "text/html"};
+        http_res res = {"1.1", status, &head, NULL};
+
+        char *path;
+
         if (strcmp(req.method, "GET") != 0) {
-            char *msg = "HTTP/1.0 501 Not Implemented\r\nContent-Type: text/html\r\n\r\n<html><body><h1>501 Not Implemented</h1></body></html>";
-            send(cfd, msg, strlen(msg), 0);
-            close(cfd);
-            
-            continue;
+            status = "501 Not Implemented";
+
+            path = malloc(strlen(SERVER_DIR) + 10);
+
+            strcpy(path, SERVER_DIR);
+            strcpy(path + strlen(SERVER_DIR), "/501.html");
+            path[strlen(SERVER_DIR) + 9] = 0;
         }
 
-        char *msg = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>CONGRATS, YOU SUCCESSFULLY GOT '%s'</h1></body></html>";
-        char *fmsg = malloc(1 + strlen(msg) + strlen(req.path));
-        snprintf(fmsg, 1 + strlen(msg) + strlen(req.path), msg, req.path);
+        if (strcmp(status, "200 OK") == 0) {
+            if (strcmp(req.path, "/") == 0) {
+                path = malloc(strlen(SERVER_DIR) + 12);
 
-        ssize_t sent = send(cfd, fmsg, strlen(fmsg), 0);
-        if (sent < 0) {
-            perror("send");
-            return -1;
-        } else if (sent != strlen(fmsg)) {
-            fprintf(stderr, "Wasn't able to send entire message\n");
-            return -1;
+                strcpy(path, SERVER_DIR);
+                strcpy(path + strlen(SERVER_DIR), "/index.html");
+                path[strlen(SERVER_DIR) + 11] = 0;
+            } else {
+                path = malloc(strlen(SERVER_DIR) + strlen(req.path) + 1);
+                
+                strcpy(path, SERVER_DIR);
+                strcpy(path + strlen(SERVER_DIR), req.path);
+                path[strlen(SERVER_DIR) + strlen(req.path)] = 0;
+            }
         }
-        
-        close(cfd);
+
+        int ret;
+        if ((ret = sendfile(cfd, &res, path)) < 0) {
+            if (ret == -2) {
+                free(path);
+
+                path = malloc(strlen(SERVER_DIR) + 10);
+
+                strcpy(path, SERVER_DIR);
+                strcpy(path + strlen(SERVER_DIR), "/404.html");
+                path[strlen(SERVER_DIR) + 9] = 0;
+
+                ret = sendfile(cfd, &res, path);
+            }
+
+            if (ret < 0) { // either we failed to send a 404 or failed to send a normal msg after getting the file
+                fprintf(stderr, "Couldn't recover from error sending file (%i)\n", ret);
+
+                free(path);
+                freereq(&req);
+                close(cfd);
+
+                return -1;
+            }
+        }
+
+        free(path);
         freereq(&req);
-        free(fmsg);
+        close(cfd);
     }
 }
