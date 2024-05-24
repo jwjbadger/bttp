@@ -276,6 +276,13 @@ int main(int argc, char **argv) {
             return -1;
         }
 
+        if (fork() != 0) {
+            close(cfd); // Main process doesn't need client info
+            continue; // Accept a new request
+        }
+
+        close(sfd); // We don't need any info about the server as the child process
+
         char caddrp[INET6_ADDRSTRLEN];
         if (inet_ntop(csaddr.sa_family, &((struct sockaddr_in *)&csaddr)->sin_addr, caddrp, INET6_ADDRSTRLEN) == NULL) {
             perror("inet_ntop");
@@ -393,5 +400,7 @@ int main(int argc, char **argv) {
         free(path);
         freereq(&req);
         close(cfd);
+
+        return 0; // exit the child process
     }
 }
