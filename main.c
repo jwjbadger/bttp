@@ -98,7 +98,13 @@ int parse_req(const char *req, http_req *freq) {
 
     freq->path = malloc(1 + path - method);
     strncpy(freq->path, method, path - method);
-    freq->path[path - method] = 0; 
+    freq->path[path - method] = 0;
+
+    if (strstr(freq->path, "..") != NULL) {
+        free(freq->method);
+        free(freq->path);
+        return -1;
+    }
 
     char *version = strchr(++path, '\r');
     if (version == NULL) {
@@ -112,8 +118,13 @@ int parse_req(const char *req, http_req *freq) {
     strncpy(freq->version, path + 5, version - path - 5);
     freq->version[version - path - 5] = 0;
 
-    freq->headers = malloc(sizeof(http_header));
     char *index = strchr(version, '\n');
+    if (index[1] == 0 || index == NULL) {
+        freq->headers = NULL;
+        return 1; // no header
+    }
+
+    freq->headers = malloc(sizeof(http_header));
     http_header *head = freq->headers;
 
     while (1) {
@@ -293,8 +304,16 @@ int main(int argc, char **argv) {
         printf("Parsed req method [%s] at path ['%s'] using HTTP version [%s]\n\n", req.method, req.path, req.version);
 
         char *status = "200 OK";
-        http_header head = {"Content-Type", "text/html"};
+        http_header head = {"Content-Type", "text/plain"};
         http_res res = {"1.1", status, &head, NULL};
+
+        if (strstr(req.path, "html") != NULL || strcmp(req.path, "/") == 0) {
+            head.key = "text/html";
+        } else if (strstr(req.path, "css") != NULL) {
+            head.key = "text/css";
+        } else if (strstr(req.path, "js") != NULL) {
+            head.key = "text/javascript";
+        }
 
         char *path;
 
